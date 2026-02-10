@@ -16,7 +16,3 @@ Here are some ideas to get you started:
 - 😄 Pronouns: ...
 - ⚡ Fun fact: ...
 -->
-
-![Anurag's GitHub stats](https://github-readme-stats.vercel.app/api?username=guilhermeasper&show_icons=true&theme=shades-of-purple)
-<br>
-![Top Langs](https://github-readme-stats.vercel.app/api/top-langs/?username=guilhermeasper&theme=shades-of-purple&hide=jupyter%20notebook,vhdl,verilog&lang_count=6)
