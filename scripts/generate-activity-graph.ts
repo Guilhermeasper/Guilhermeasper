@@ -200,7 +200,7 @@ export function buildMonthSeries({ days, now }: { days: ContributionDay[]; now: 
     }
 
     return {
-      label: isCurrent ? "Current" : (MONTH_LABELS[month - 1] ?? String(month)),
+      label: (MONTH_LABELS[month - 1] ?? String(month)),
       points: padToAxisDays(normalizeWithSoftSaturation(smoothPoints(applyAnscombeTransform(countsByDay)))),
       isCurrent,
     };
