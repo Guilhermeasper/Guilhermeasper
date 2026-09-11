@@ -3,19 +3,19 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MONTHS_BACK = 6;
-const MAX_DAY = 30;
+const AXIS_MAX_DAY = 31;
 const MILLISECONDS_PER_DAY = 86_400_000;
 const WIDTH = 760;
 const HEIGHT = 300;
 const MARGIN = { top: 72, right: 24, bottom: 42, left: 54 };
 const PLOT_WIDTH = WIDTH - MARGIN.left - MARGIN.right;
 const PLOT_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
-const DAY_GUIDES = [1, 5, 10, 15, 20, 25, 30];
+const DAY_GUIDES = [1, 6, 11, 16, 21, 26, 31];
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 type ContributionDay = { year: number; month: number; day: number; count: number };
 type ActivityPoint = { day: number; score: number };
-type MonthSeries = { label: string; points: ActivityPoint[]; isCurrent: boolean };
+type MonthSeries = { label: string; points: (ActivityPoint | null)[]; isCurrent: boolean };
 type ThemeName = "light" | "dark";
 type Theme = {
   background: string;
@@ -124,8 +124,18 @@ function monthStart(now: Date, offset: number): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
 }
 
-function smoothPoints(countsByDay: Map<number, number>): ActivityPoint[] {
-  const smoothed = [...countsByDay.keys()]
+const ANSCOMBE_ZERO_OFFSET = 2 * Math.sqrt(3 / 8);
+
+function anscombeValue(count: number): number {
+  return 2 * Math.sqrt(count + 3 / 8) - ANSCOMBE_ZERO_OFFSET;
+}
+
+export function applyAnscombeTransform(countsByDay: Map<number, number>): Map<number, number> {
+  return new Map([...countsByDay].map(([day, count]) => [day, anscombeValue(count)]));
+}
+
+export function smoothPoints(countsByDay: Map<number, number>): ActivityPoint[] {
+  return [...countsByDay.keys()]
     .sort((left, right) => left - right)
     .map((day) => {
       const neighbors = [
@@ -140,9 +150,32 @@ function smoothPoints(countsByDay: Map<number, number>): ActivityPoint[] {
       );
       return { day, score: weightedCount / availableWeight };
     });
-  const maximum = Math.max(0, ...smoothed.map(({ score }) => score));
+}
 
-  return smoothed.map(({ day, score }) => ({ day, score: maximum === 0 ? 0 : score / maximum }));
+const NORMALIZATION_EPSILON = anscombeValue(1);
+
+function percentile(sortedValues: number[], fraction: number): number {
+  const index = fraction * (sortedValues.length - 1);
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  const lowerValue = requireAt(sortedValues, lower);
+  const upperValue = requireAt(sortedValues, upper);
+  return lowerValue + (upperValue - lowerValue) * (index - lower);
+}
+
+export function normalizeWithSoftSaturation(points: ActivityPoint[]): ActivityPoint[] {
+  if (points.length === 0) return [];
+
+  const sortedScores = points.map(({ score }) => score).sort((left, right) => left - right);
+  const p90 = percentile(sortedScores, 0.9);
+  const scale = Math.max(p90, NORMALIZATION_EPSILON);
+
+  return points.map(({ day, score }) => ({ day, score: Math.tanh(score / scale) }));
+}
+
+export function padToAxisDays(points: ActivityPoint[]): (ActivityPoint | null)[] {
+  const byDay = new Map(points.map((point) => [point.day, point]));
+  return Array.from({ length: AXIS_MAX_DAY }, (_, index) => byDay.get(index + 1) ?? null);
 }
 
 export function buildMonthSeries({ days, now }: { days: ContributionDay[]; now: Date }): MonthSeries[] {
@@ -162,42 +195,107 @@ export function buildMonthSeries({ days, now }: { days: ContributionDay[]; now: 
       if (contribution.year !== year || contribution.month !== month) continue;
       if (isCurrent && contribution.day > now.getUTCDate()) continue;
 
-      const day = Math.min(contribution.day, MAX_DAY);
+      const day = contribution.day;
       countsByDay.set(day, (countsByDay.get(day) ?? 0) + contribution.count);
     }
 
     return {
       label: isCurrent ? "Current" : (MONTH_LABELS[month - 1] ?? String(month)),
-      points: smoothPoints(countsByDay),
+      points: padToAxisDays(normalizeWithSoftSaturation(smoothPoints(applyAnscombeTransform(countsByDay)))),
       isCurrent,
     };
   });
 }
 
 function scaleX(day: number): number {
-  return MARGIN.left + ((day - 1) / (MAX_DAY - 1)) * PLOT_WIDTH;
+  return MARGIN.left + ((day - 1) / (AXIS_MAX_DAY - 1)) * PLOT_WIDTH;
 }
 
 function scaleY(score: number): number {
   return MARGIN.top + PLOT_HEIGHT - Math.min(1, Math.max(0, score)) * PLOT_HEIGHT;
 }
 
-function buildPath(points: ActivityPoint[]): string {
+function requireAt<T>(array: readonly T[], index: number): T {
+  const value = array[index];
+  if (value === undefined) throw new Error(`Index ${index} out of bounds`);
+  return value;
+}
+
+function steffenTangents(points: ActivityPoint[]): number[] {
+  const n = points.length;
+  const h: number[] = [];
+  const s: number[] = [];
+  for (let i = 0; i < n - 1; i += 1) {
+    const current = requireAt(points, i);
+    const next = requireAt(points, i + 1);
+    const dx = next.day - current.day;
+    h.push(dx);
+    s.push((next.score - current.score) / dx);
+  }
+
+  const tangents: number[] = new Array(n);
+  tangents[0] = requireAt(s, 0);
+  tangents[n - 1] = requireAt(s, n - 2);
+  for (let i = 1; i < n - 1; i += 1) {
+    const sPrev = requireAt(s, i - 1);
+    const sNext = requireAt(s, i);
+    const hPrev = requireAt(h, i - 1);
+    const hNext = requireAt(h, i);
+    if (sPrev * sNext <= 0) {
+      tangents[i] = 0;
+      continue;
+    }
+    const p = (sPrev * hNext + sNext * hPrev) / (hNext + hPrev);
+    const bound = Math.min(Math.abs(p), 2 * Math.abs(sPrev), 2 * Math.abs(sNext));
+    tangents[i] = Math.sign(p) * bound;
+  }
+  return tangents;
+}
+
+function buildRunPath(points: ActivityPoint[]): string {
   const first = points[0];
   if (!first) return "";
+  if (points.length === 1) return `M ${scaleX(first.day).toFixed(1)} ${scaleY(first.score).toFixed(1)}`;
 
-  let previous = first;
+  const tangents = steffenTangents(points);
   let path = `M ${scaleX(first.day).toFixed(1)} ${scaleY(first.score).toFixed(1)}`;
-  for (const point of points.slice(1)) {
-    const previousX = scaleX(previous.day);
-    const previousY = scaleY(previous.score);
-    const x = scaleX(point.day);
-    const y = scaleY(point.score);
-    const middleX = (previousX + x) / 2;
-    path += ` C ${middleX.toFixed(1)} ${previousY.toFixed(1)} ${middleX.toFixed(1)} ${y.toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)}`;
-    previous = point;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const current = requireAt(points, i);
+    const next = requireAt(points, i + 1);
+    const h = next.day - current.day;
+    const m0 = requireAt(tangents, i);
+    const m1 = requireAt(tangents, i + 1);
+
+    const control1Day = current.day + h / 3;
+    const control1Score = current.score + (m0 * h) / 3;
+    const control2Day = next.day - h / 3;
+    const control2Score = next.score - (m1 * h) / 3;
+
+    path +=
+      ` C ${scaleX(control1Day).toFixed(1)} ${scaleY(control1Score).toFixed(1)}` +
+      ` ${scaleX(control2Day).toFixed(1)} ${scaleY(control2Score).toFixed(1)}` +
+      ` ${scaleX(next.day).toFixed(1)} ${scaleY(next.score).toFixed(1)}`;
   }
   return path;
+}
+
+export function buildMonotonePath(points: readonly (ActivityPoint | null)[]): string {
+  const runs: ActivityPoint[][] = [];
+  let currentRun: ActivityPoint[] = [];
+  for (const point of points) {
+    if (point === null) {
+      if (currentRun.length > 0) runs.push(currentRun);
+      currentRun = [];
+    } else {
+      currentRun.push(point);
+    }
+  }
+  if (currentRun.length > 0) runs.push(currentRun);
+
+  return runs
+    .map(buildRunPath)
+    .filter((path) => path.length > 0)
+    .join(" ");
 }
 
 function seriesColor(theme: Theme, index: number): string {
@@ -223,7 +321,7 @@ export function renderChart({ theme: themeName, months }: { theme: ThemeName; mo
   const paths = months
     .map((month, index) => {
       const color = seriesColor(theme, index);
-      return `<path d="${buildPath(month.points)}" fill="none" stroke="${color}" stroke-width="${month.isCurrent ? 2.8 : 1.6}" stroke-linecap="round" stroke-linejoin="round" opacity="${month.isCurrent ? 1 : 0.72}" />`;
+      return `<path d="${buildMonotonePath(month.points)}" fill="none" stroke="${color}" stroke-width="${month.isCurrent ? 2.8 : 1.6}" stroke-linecap="round" stroke-linejoin="round" opacity="${month.isCurrent ? 1 : 0.72}" />`;
     })
     .join("\n    ");
   const legendStep = PLOT_WIDTH / months.length;

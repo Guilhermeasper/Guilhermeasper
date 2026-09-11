@@ -4,9 +4,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildMonthSeries, parseContributionFeed, renderChart, runGenerator } from "./generate-activity-graph.ts";
+import {
+  applyAnscombeTransform,
+  buildMonotonePath,
+  buildMonthSeries,
+  normalizeWithSoftSaturation,
+  padToAxisDays,
+  parseContributionFeed,
+  renderChart,
+  runGenerator,
+  smoothPoints,
+} from "./generate-activity-graph.ts";
 
 const MILLISECONDS_PER_DAY = 86_400_000;
+
+function assertClose(actual: number, expected: number, epsilon = 1e-9): void {
+  assert.ok(
+    Math.abs(actual - expected) < epsilon,
+    `expected ${actual} to be within ${epsilon} of ${expected}`,
+  );
+}
+
+function nonNull<T>(value: T | null): value is T {
+  return value !== null;
+}
 
 function contributionFeed({
   start,
@@ -143,20 +164,41 @@ test("buildMonthSeries selects six UTC calendar months across a year boundary", 
   );
 });
 
-test("buildMonthSeries folds day 31 before smoothing and monthly normalization", () => {
+test("buildMonthSeries keeps day 29, 30, and 31 as distinct points", () => {
   const days = [
     { year: 2026, month: 5, day: 29, count: 0 },
-    { year: 2026, month: 5, day: 30, count: 2 },
-    { year: 2026, month: 5, day: 31, count: 6 },
+    { year: 2026, month: 5, day: 30, count: 1 },
+    { year: 2026, month: 5, day: 31, count: 4 },
   ];
 
   const months = buildMonthSeries({ days, now: new Date("2026-06-15T02:00:00.000Z") });
   const may = months.find(({ label }) => label === "May");
 
-  assert.deepEqual(may?.points, [
-    { day: 29, score: 0.5 },
-    { day: 30, score: 1 },
-  ]);
+  assert.equal(may?.points.length, 31);
+  assert.ok(may?.points.slice(0, 28).every((point) => point === null));
+  const [day29, day30, day31] = may?.points.filter(nonNull) ?? [];
+  assert.deepEqual(
+    [day29, day30, day31].map((point) => point?.day),
+    [29, 30, 31],
+  );
+  assert.ok((day29?.score ?? 0) < (day30?.score ?? 0));
+  assert.ok((day30?.score ?? 0) < (day31?.score ?? 0));
+});
+
+test("buildMonthSeries pads a 30-day month with a null day-31 slot", () => {
+  const days = Array.from({ length: 30 }, (_, index) => ({
+    year: 2026,
+    month: 4,
+    day: index + 1,
+    count: 1,
+  }));
+
+  const months = buildMonthSeries({ days, now: new Date("2026-05-10T02:00:00.000Z") });
+  const april = months.find(({ label }) => label === "Apr");
+
+  assert.equal(april?.points.length, 31);
+  assert.equal(april?.points[29]?.day, 30);
+  assert.equal(april?.points[30], null);
 });
 
 test("buildMonthSeries stops the current month at the current UTC day", () => {
@@ -168,10 +210,12 @@ test("buildMonthSeries stops the current month at the current UTC day", () => {
 
   const months = buildMonthSeries({ days, now: new Date("2026-09-10T02:00:00.000Z") });
 
+  assert.equal(months.at(-1)?.points.length, 31);
   assert.deepEqual(
-    months.at(-1)?.points.map(({ day }) => day),
+    months.at(-1)?.points.filter(nonNull).map(({ day }) => day),
     [9, 10],
   );
+  assert.equal(months.at(-1)?.points[10], null);
 });
 
 test("buildMonthSeries handles February, leap years, and an inactive month", () => {
@@ -184,12 +228,21 @@ test("buildMonthSeries handles February, leap years, and an inactive month", () 
     ({ label }) => label === "Feb",
   );
 
-  assert.equal(leapFebruary?.points.length, 29);
-  assert.ok(leapFebruary?.points.every(({ score }) => score === 0));
-  assert.equal(regularFebruary?.points.length, 28);
+  assert.equal(leapFebruary?.points.length, 31);
+  const leapReal = leapFebruary?.points.filter(nonNull) ?? [];
+  assert.equal(leapReal.length, 29);
+  assert.equal(leapReal.at(-1)?.day, 29);
+  assert.ok(leapReal.every(({ score }) => score === 0));
+  assert.ok(leapFebruary?.points.slice(29).every((point) => point === null));
+
+  assert.equal(regularFebruary?.points.length, 31);
+  const regularReal = regularFebruary?.points.filter(nonNull) ?? [];
+  assert.equal(regularReal.length, 28);
+  assert.equal(regularReal.at(-1)?.day, 28);
+  assert.ok(regularFebruary?.points.slice(28).every((point) => point === null));
 });
 
-test("buildMonthSeries applies centered weights and renormalizes boundary weights", () => {
+test("buildMonthSeries spreads an isolated spike onto its smoothed neighbors", () => {
   const days = [
     { year: 2026, month: 8, day: 1, count: 0 },
     { year: 2026, month: 8, day: 2, count: 4 },
@@ -199,11 +252,214 @@ test("buildMonthSeries applies centered weights and renormalizes boundary weight
     ({ label }) => label === "Aug",
   );
 
-  assert.deepEqual(august?.points, [
-    { day: 1, score: 2 / 3 },
-    { day: 2, score: 1 },
-    { day: 3, score: 2 / 3 },
+  assert.equal(august?.points.length, 31);
+  const [day1, day2, day3] = august?.points.filter(nonNull) ?? [];
+  assert.deepEqual([day1, day2, day3].map((point) => point?.day), [1, 2, 3]);
+  assert.equal(day1?.score, day3?.score);
+  assert.ok((day1?.score ?? 0) > 0, "boundary days should receive smoothed spillover from the spike");
+  assert.ok((day2?.score ?? 0) > (day1?.score ?? 0), "the spike day should score higher than its neighbors");
+  assert.ok(august?.points.slice(3).every((point) => point === null));
+});
+
+test("applyAnscombeTransform maps zero to zero and compresses larger counts", () => {
+  const result = applyAnscombeTransform(
+    new Map([
+      [1, 0],
+      [2, 1],
+      [3, 4],
+      [4, 9],
+    ]),
+  );
+
+  const values = [...result.values()];
+  assert.equal(values[0], 0);
+  assertClose(values[1] ?? NaN, 1.120463008520126);
+  assertClose(values[2] ?? NaN, 2.958555261278789);
+  assertClose(values[3] ?? NaN, 4.898979485566356);
+});
+
+test("applyAnscombeTransform is monotonically increasing and handles an empty map", () => {
+  const result = applyAnscombeTransform(
+    new Map([
+      [1, 1],
+      [2, 2],
+      [3, 3],
+    ]),
+  );
+  const values = [...result.values()];
+  assert.ok((values[0] ?? 0) < (values[1] ?? 0));
+  assert.ok((values[1] ?? 0) < (values[2] ?? 0));
+  assert.deepEqual([...applyAnscombeTransform(new Map())], []);
+});
+
+test("smoothPoints applies centered weights and renormalizes boundary weights without normalizing to [0,1]", () => {
+  const points = smoothPoints(
+    new Map([
+      [1, 0],
+      [2, 4],
+      [3, 0],
+    ]),
+  );
+
+  assert.deepEqual(points, [
+    { day: 1, score: 4 / 3 },
+    { day: 2, score: 2 },
+    { day: 3, score: 4 / 3 },
   ]);
+});
+
+test("smoothPoints returns all-zero scores for an all-zero month", () => {
+  const points = smoothPoints(
+    new Map([
+      [1, 0],
+      [2, 0],
+    ]),
+  );
+
+  assert.deepEqual(points, [
+    { day: 1, score: 0 },
+    { day: 2, score: 0 },
+  ]);
+});
+
+test("normalizeWithSoftSaturation scales by the 90th percentile and soft-clips with tanh", () => {
+  const points = [0, 1, 2, 3, 4].map((score, index) => ({ day: index + 1, score }));
+
+  const result = normalizeWithSoftSaturation(points);
+
+  assertClose(result[0]?.score ?? NaN, 0);
+  assertClose(result[1]?.score ?? NaN, 0.2708471185167214);
+  assertClose(result[2]?.score ?? NaN, 0.5046723977218567);
+  assertClose(result[3]?.score ?? NaN, 0.6822617902381696);
+  assertClose(result[4]?.score ?? NaN, 0.8044548002984013);
+});
+
+test("normalizeWithSoftSaturation floors the scale at epsilon so faint months don't get amplified to full scale", () => {
+  const faintScore = (2 / 3) * 1.120463008520126;
+  const result = normalizeWithSoftSaturation([{ day: 1, score: faintScore }]);
+
+  assertClose(result[0]?.score ?? NaN, 0.5827829453479102);
+});
+
+test("normalizeWithSoftSaturation maps an all-zero month to all-zero scores", () => {
+  const result = normalizeWithSoftSaturation([
+    { day: 1, score: 0 },
+    { day: 2, score: 0 },
+  ]);
+
+  assert.deepEqual(result, [
+    { day: 1, score: 0 },
+    { day: 2, score: 0 },
+  ]);
+});
+
+test("normalizeWithSoftSaturation handles an empty series", () => {
+  assert.deepEqual(normalizeWithSoftSaturation([]), []);
+});
+
+test("padToAxisDays fills a fixed 31-slot axis with null for missing days", () => {
+  const padded = padToAxisDays([
+    { day: 1, score: 0.1 },
+    { day: 2, score: 0.2 },
+  ]);
+
+  assert.equal(padded.length, 31);
+  assert.deepEqual(padded[0], { day: 1, score: 0.1 });
+  assert.deepEqual(padded[1], { day: 2, score: 0.2 });
+  assert.ok(padded.slice(2).every((point) => point === null));
+});
+
+test("padToAxisDays places points by day number, not by array position", () => {
+  const padded = padToAxisDays([
+    { day: 29, score: 0.5 },
+    { day: 31, score: 1 },
+  ]);
+
+  assert.equal(padded.length, 31);
+  assert.ok(padded.slice(0, 28).every((point) => point === null));
+  assert.deepEqual(padded[28], { day: 29, score: 0.5 });
+  assert.equal(padded[29], null);
+  assert.deepEqual(padded[30], { day: 31, score: 1 });
+});
+
+function extractPathYCoordinates(path: string): number[] {
+  const segments = path.split(" C ");
+  const startCoordinates = segments[0]?.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  const yCoordinates = startCoordinates[1] === undefined ? [] : [startCoordinates[1]];
+  for (const segment of segments.slice(1)) {
+    const coordinates = segment.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+    for (const index of [1, 3, 5]) {
+      const y = coordinates[index];
+      if (y !== undefined) yCoordinates.push(y);
+    }
+  }
+  return yCoordinates;
+}
+
+test("buildMonotonePath does not overshoot an isolated spike", () => {
+  const points = [
+    { day: 1, score: 0 },
+    { day: 2, score: 0 },
+    { day: 3, score: 1 },
+    { day: 4, score: 0 },
+    { day: 5, score: 0 },
+  ];
+
+  const path = buildMonotonePath(points);
+  const yCoordinates = extractPathYCoordinates(path);
+  assert.ok(yCoordinates.every((y) => y >= 72 && y <= 258));
+});
+
+test("buildMonotonePath does not overshoot a plateau", () => {
+  const points = [
+    { day: 1, score: 0 },
+    { day: 2, score: 1 },
+    { day: 3, score: 1 },
+    { day: 4, score: 0 },
+  ];
+
+  const path = buildMonotonePath(points);
+  const yCoordinates = extractPathYCoordinates(path);
+  assert.ok(yCoordinates.every((y) => y >= 72 && y <= 258));
+});
+
+test("buildMonotonePath handles zero, one, and two points", () => {
+  assert.equal(buildMonotonePath([]), "");
+
+  const single = buildMonotonePath([{ day: 1, score: 0.5 }]);
+  assert.doesNotMatch(single, / C /);
+  assert.match(single, /^M /);
+
+  const pair = buildMonotonePath([
+    { day: 1, score: 0 },
+    { day: 2, score: 1 },
+  ]);
+  assert.equal(pair.split(" C ").length - 1, 1);
+});
+
+test("buildMonotonePath breaks the line into separate subpaths at null gaps", () => {
+  const path = buildMonotonePath([
+    { day: 1, score: 0 },
+    { day: 2, score: 1 },
+    null,
+    null,
+    { day: 5, score: 0 },
+    { day: 6, score: 1 },
+  ]);
+
+  const moveToCount = path.split(" ").filter((token) => token === "M").length;
+  assert.equal(moveToCount, 2, "each run separated by a gap should start with its own M command");
+  assert.equal(path.split(" C ").length - 1, 2, "each two-point run draws exactly one C segment");
+});
+
+test("buildMonotonePath skips leading and trailing null gaps entirely", () => {
+  const path = buildMonotonePath([null, null, { day: 3, score: 0.5 }, null]);
+  assert.equal(path.split(" ").filter((token) => token === "M").length, 1);
+  assert.doesNotMatch(path, / C /);
+});
+
+test("buildMonotonePath returns an empty string when every slot is null", () => {
+  assert.equal(buildMonotonePath([null, null, null]), "");
 });
 
 test("renderChart creates an accessible smooth six-series chart with aligned day guides", () => {
@@ -246,20 +502,11 @@ test("renderChart creates an accessible smooth six-series chart with aligned day
   }
 
   for (const path of paths) {
-    const segments = path?.split(" C ") ?? [];
-    const startCoordinates = segments[0]?.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
-    const yCoordinates = startCoordinates[1] === undefined ? [] : [startCoordinates[1]];
-    for (const segment of segments.slice(1)) {
-      const coordinates = segment.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
-      for (const index of [1, 3, 5]) {
-        const y = coordinates[index];
-        if (y !== undefined) yCoordinates.push(y);
-      }
-    }
-    assert.ok(yCoordinates.every((y) => y >= 72 && y <= 258));
+    if (!path) continue;
+    assert.ok(extractPathYCoordinates(path).every((y) => y >= 72 && y <= 258));
   }
 
-  for (const day of [1, 5, 10, 15, 20, 25, 30]) {
+  for (const day of [1, 6, 11, 16, 21, 26, 31]) {
     const labelX = svg.match(new RegExp(`<text x="([^"]+)"[^>]*>${day}<\\/text>`))?.[1];
     assert.ok(labelX);
     assert.match(svg, new RegExp(`<line x1="${labelX}"[^>]*x2="${labelX}"`));
