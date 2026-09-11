@@ -1,0 +1,17 @@
+{
+  "name": "guilhermeasper-profile",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "generate": "node scripts/generate-activity-graph.ts",
+    "test": "TZ=America/Bahia node --test scripts/generate-activity-graph.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.7.2",
+    "typescript": "5.9.3"
+  }
+}
