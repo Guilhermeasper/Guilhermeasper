@@ -40,14 +40,10 @@ I build trading products at Questrade and work across the full delivery path: in
 ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-06005B?style=flat-square&logo=githubactions&logoColor=white)
 ![Figma](https://img.shields.io/badge/Figma-06005B?style=flat-square&logo=figma&logoColor=white)
 
-## Contribution rhythm
+## Contributions
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/activity-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="assets/activity-light.svg">
   <img alt="Six months of contribution activity overlaid by day of month" src="assets/activity-light.svg">
 </picture>
-
-Each line is one month. Activity is smoothed over three days and scaled to that month's busiest period, so the chart compares rhythm rather than raw volume. Contributions on day 31 are included in day 30.
-
-<sub>Regenerated daily from the contribution totals already visible on this profile.</sub>
