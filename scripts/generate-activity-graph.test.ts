@@ -486,13 +486,18 @@ test("renderChart creates an accessible smooth six-series chart with aligned day
   assert.doesNotMatch(svg, /data-count|contributionCount|contributions on/i);
   assert.deepEqual(
     [...svg.matchAll(/<path[^>]+stroke="([^"]+)"/g)].map((match) => match[1]),
-    ["#a21caf", "#c2410c", "#a16207", "#15803d", "#0e7490", "#06005b"],
+    ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#A67600", "#5A5A5A"],
   );
   const darkSvg = renderChart({ theme: "dark", months });
   assert.deepEqual(
     [...darkSvg.matchAll(/<path[^>]+stroke="([^"]+)"/g)].map((match) => match[1]),
-    ["#f0abfc", "#fdba74", "#fde047", "#4ade80", "#67e8f9", "#a4aafe"],
+    ["#56B4E9", "#FF8A65", "#4FD6A5", "#E88AC7", "#F2D35C", "#C9D1D9"],
   );
+  const dashes = [...svg.matchAll(/<path[^>]+?(?:stroke-dasharray="([^"]+)")?\s*\/>/g)].map((match) => match[1]);
+  assert.equal(dashes.length, 6);
+  assert.ok(dashes.slice(0, 5).every((dash) => dash !== undefined));
+  assert.equal(dashes[5], undefined);
+  assert.equal(new Set(dashes.slice(0, 5)).size, 5);
 
   let previousLabelPosition = -1;
   for (const { label } of months) {

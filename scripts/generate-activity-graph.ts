@@ -38,14 +38,14 @@ const THEMES = {
     gridline: "#dbdbff",
     axisText: "#323144",
     title: "#06005b",
-    seriesColors: ["#a21caf", "#c2410c", "#a16207", "#15803d", "#0e7490", "#06005b"],
+    seriesColors: ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#A67600", "#5A5A5A"],
   },
   dark: {
     background: "#0d1117",
     gridline: "#323144",
     axisText: "#e8e5fb",
     title: "#a4aafe",
-    seriesColors: ["#f0abfc", "#fdba74", "#fde047", "#4ade80", "#67e8f9", "#a4aafe"],
+    seriesColors: ["#56B4E9", "#FF8A65", "#4FD6A5", "#E88AC7", "#F2D35C", "#C9D1D9"],
   },
 } satisfies Record<ThemeName, Theme>;
 
@@ -302,6 +302,13 @@ function seriesColor(theme: Theme, index: number): string {
   return theme.seriesColors[index] ?? theme.seriesColors[5];
 }
 
+const DASH_PATTERNS = ["8 3", "3 3", "10 3 2 3", "2 3", "8 3 2 3"] as const;
+
+function seriesDash(index: number, isCurrent: boolean): string | undefined {
+  if (isCurrent) return undefined;
+  return DASH_PATTERNS[index] ?? DASH_PATTERNS[DASH_PATTERNS.length - 1];
+}
+
 export function renderChart({ theme: themeName, months }: { theme: ThemeName; months: MonthSeries[] }): string {
   const theme = THEMES[themeName];
   const horizontalGuides = [0, 0.25, 0.5, 0.75, 1]
@@ -321,7 +328,8 @@ export function renderChart({ theme: themeName, months }: { theme: ThemeName; mo
   const paths = months
     .map((month, index) => {
       const color = seriesColor(theme, index);
-      return `<path d="${buildMonotonePath(month.points)}" fill="none" stroke="${color}" stroke-width="${month.isCurrent ? 2.8 : 1.6}" stroke-linecap="round" stroke-linejoin="round" opacity="${month.isCurrent ? 1 : 0.72}" />`;
+      const dash = seriesDash(index, month.isCurrent);
+      return `<path d="${buildMonotonePath(month.points)}" fill="none" stroke="${color}" stroke-width="${month.isCurrent ? 2.8 : 1.6}" stroke-linecap="round" stroke-linejoin="round" opacity="${month.isCurrent ? 1 : 0.72}"${dash ? ` stroke-dasharray="${dash}"` : ""} />`;
     })
     .join("\n    ");
   const legendStep = PLOT_WIDTH / months.length;
