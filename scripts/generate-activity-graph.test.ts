@@ -159,7 +159,7 @@ test("buildMonthSeries selects six UTC calendar months across a year boundary", 
       { label: "Oct", isCurrent: false },
       { label: "Nov", isCurrent: false },
       { label: "Dec", isCurrent: false },
-      { label: "Current", isCurrent: true },
+      { label: "Jan", isCurrent: true },
     ],
   );
 });
