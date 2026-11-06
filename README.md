@@ -22,6 +22,7 @@ I build trading products at Questrade and work across the full delivery path: in
 | Project | What it is |
 | --- | --- |
 | **[MarquinhosBOT](https://github.com/Devaneios/MarquinhosBOT)** | A Bun monorepo containing a Sapphire Discord bot, Express API, and React Discord Activity. |
+| **[Papelada Estágio](https://github.com/Guilhermeasper/papelada-estagio)** | A react web app that generates required internship paperwork for CIn/UFPE students. |
 | **[guilhermeasper.dev.br](https://github.com/Guilhermeasper/guilhermeasper.dev.br)** | The React portfolio and visual reference for this profile. |
 | **[Assiste Comigo](https://github.com/Guilhermeasper/assiste-comigo-web-extension)** | A Chrome and Edge extension that synchronizes playback across supported streaming sites. |
 
